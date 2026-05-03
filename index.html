@@ -193,7 +193,7 @@
         // ================== ГЛОБАЛЬНЫЕ НАСТРОЙКИ ==================
         // Замени на свой URL API (должен быть HTTPS)
         const API_BASE_URL = 'https://your-server.com'; // ← поменяй!
-        const BOT_USERNAME = 'your_main_bot'; // ← поменяй!
+        const BOT_USERNAME = 'rtdff_bot'; // ← поменяй!
 
         // Получение параметров из URL (передаются ботом)
         const urlParams = new URLSearchParams(location.search);
@@ -507,4 +507,67 @@
             function renderProfile(user) {
                 const html = `
                     <div class="card">
-                        <input type="text" id=
+                        <input type="text" id="firstNameInput" placeholder="${t('firstName')}" value="${user.first_name || ''}">
+                        <input type="text" id="addressInput" placeholder="${t('address')}" value="${user.address || ''}">
+                        <p style="margin:12px 0;">${t('phone')}: ${user.phone || '—'}</p>
+                        <button class="btn btn-block" id="saveProfileBtn">${t('save')}</button>
+                    </div>
+                `;
+                pages.profile.innerHTML = html;
+
+                document.getElementById('saveProfileBtn').addEventListener('click', () => {
+                    const firstName = document.getElementById('firstNameInput').value;
+                    const address = document.getElementById('addressInput').value;
+                    tg.sendData(JSON.stringify({
+                        action: 'update_profile',
+                        first_name: firstName,
+                        address: address
+                    }));
+                    tg.showAlert(t('profileUpdated'));
+                });
+            }
+
+            // Заказы
+            async function loadOrders() {
+                try {
+                    const resp = await fetch(${API_BASE_URL}/api/orders, {
+                        headers: { 'X-Telegram-Init-Data': tg.initData }
+                    });
+                    if (!resp.ok) throw new Error();
+                    const orders = await resp.json();
+                    if (!orders.length) {
+                        pages.orders.innerHTML = <p style="padding:20px;">${t('ordersEmpty')}</p>;
+                        return;
+                    }
+                    let html = '';
+                    orders.forEach(o => {
+                        html += 
+                            <div class="card">
+                                <b>№${o.id}</b> — ${o.status}<br>
+                                <small>${o.total.toLocaleString()} ${t('sum')}</small>
+                            </div>
+                        ;
+                    });
+                    pages.orders.innerHTML = html;
+                } catch (e) {
+                    pages.orders.innerHTML = <p style="padding:20px;">${t('errorLoadOrders')}</p>`;
+                }
+            }
+
+            // Стартовая загрузка
+            loadProducts();
+            updateCartBadge();
+            // Первоначально показываем страницу товаров
+            switchPage('shop');
+        }
+
+        // ================== СТАРТ ==================
+        // Если в URL есть параметр verify=1, сразу показываем экран ввода кода
+        if (verifyMode) {
+            showNotVerified(true);
+        } else {
+            checkUser();
+        }
+    </script>
+</body>
+</html>
