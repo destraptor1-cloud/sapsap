@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ru">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>Marketplace</title>
+    <title>Маркетплейс</title>
     <style>
         :root {
             --bg: var(--tg-theme-bg-color, #fff);
@@ -20,6 +20,7 @@
             background: var(--secondary-bg);
             color: var(--text);
             padding-bottom: 60px;
+            min-height: 100vh;
         }
         .screen { display: none; padding: 16px; }
         .screen.active { display: block; }
@@ -43,13 +44,22 @@
         }
         .cart-items { margin-top: 10px; }
         .cart-item { display: flex; justify-content: space-between; padding: 8px 0; }
+        input[type="text"] {
+            width: 100%; padding: 12px; margin-bottom: 10px;
+            border-radius: 12px; border: 1px solid #ccc;
+            background: var(--bg); color: var(--text);
+        }
     </style>
 </head>
 <body>
-    <!-- Экран для неверифицированных пользователей -->
+    <!-- Экран неверифицированного пользователя -->
     <div id="notVerifiedScreen" class="screen">
         <p id="notVerifiedText"></p>
-        <button class="btn" id="goToBotBtn"></button>
+        <div id="verifyCodeBlock" style="display:none;">
+            <input type="text" id="codeInput" placeholder="Код" maxlength="4" inputmode="numeric">
+            <button class="btn" id="sendCodeBtn">Подтвердить</button>
+        </div>
+        <button class="btn" id="goToBotBtn" style="display:none;"></button>
     </div>
 
     <!-- Основной интерфейс -->
@@ -66,30 +76,27 @@
         <div id="page_orders" class="page" style="display:none"></div>
     </div>
 
+    <!-- Telegram Web App SDK (обязательно до своего скрипта) -->
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <script>
+        /* global tg */
         const tg = window.Telegram.WebApp;
         tg.ready();
         tg.expand();
 
-        // Получаем параметры из URL
         const urlParams = new URLSearchParams(location.search);
         const userId = urlParams.get('user_id');
         const lang = urlParams.get('lang') || 'ru';
         const verifyMode = urlParams.get('verify') === '1';
 
-        // Локализация
-        const t = (key, ...args) => {
-            const dict = window.translations[lang] || window.translations['ru'];
-            let text = dict[key] || key;
-            args.forEach((val, idx) => { text = text.replace('{${idx}}', val); });
-            return text;
-        };
-        // Загружаем переводы
-        window.translations = {
+        // Простой переводчик
+        const translations = {
             ru: {
                 not_verified: "Войдите через Telegram-бота, чтобы продолжить.",
                 go_to_bot: "Открыть бота",
+                enter_code: "Введите код из сообщения бота",
+                code_placeholder: "Код",
+                confirm: "Подтвердить",
                 tab_shop: "Товары", tab_cart: "Корзина", tab_profile: "Профиль", tab_orders: "Заказы",
                 add_to_cart: "В корзину", checkout: "Оформить заказ", empty_cart: "Корзина пуста",
                 total: "Итого", sum: "сум", save: "Сохранить", orders_empty: "У вас пока нет заказов",
@@ -99,6 +106,9 @@
             uz: {
                 not_verified: "Davom etish uchun Telegram-bot orqali kiring.",
                 go_to_bot: "Botni ochish",
+                enter_code: "Botdan kelgan kodni kiriting",
+                code_placeholder: "Kod",
+                confirm: "Tasdiqlash",
                 tab_shop: "Mahsulotlar", tab_cart: "Savat", tab_profile: "Profil", tab_orders: "Buyurtmalar",
                 add_to_cart: "Savatga", checkout: "Rasmiylashtirish", empty_cart: "Savat bo'sh",
                 total: "Jami", sum: "so'm", save: "Saqlash", orders_empty: "Sizda hali buyurtmalar yo'q",
@@ -106,64 +116,101 @@
                 profile_updated: "Profil yangilandi", order_sent: "Buyurtma yuborildi"
             }
         };
-
-        // Проверяем, нужно ли подтверждение кода
-        if (verifyMode) {
-            document.getElementById('notVerifiedScreen').classList.add('active');
-            document.getElementById('notVerifiedText').textContent = "Iltimos, kodni kiriting" ;
-            // показываем поле ввода кода
-            // (для краткости опускаю, но лучше показать input и отправить через sendData)
+        function t(key, ...args) {
+            const dict = translations[lang] || translations['ru'];
+            let text = dict[key] || key;
+            args.forEach((val, idx) => { text = text.replace(`{${idx}}`, val); });
+            return text;
         }
 
-        // Основная логика, если пользователь уже верифицирован
-        if (!verifyMode) {
-            // Проверим верификацию через API
-            fetch(/api/user, { headers: { 'X-Telegram-Init-Data': tg.initData } })
-                .then(r => r.json())
-                .then(user => {
-                    if (user.error) {
-                        // показать экран "не верифицирован"
-                        showNotVerified();
-                    } else {
-                        initMainApp(user);
-                    }
-                })
-                .catch(() => showNotVerified());
+        // Флаг, что пользователь верифицирован (определится после запроса)
+        let isVerified = false;
+
+        // Проверка статуса
+        async function checkVerification() {
+            try {
+                const resp = await fetch('/api/user', {
+                    headers: { 'X-Telegram-Init-Data': tg.initData }
+                });
+                if (!resp.ok) throw new Error('Network response was not ok');
+                const user = await resp.json();
+                if (user && !user.error) {
+                    isVerified = true;
+                    initMainApp(user);
+                    return;
+                }
+            } catch (e) {
+                console.error('Не удалось проверить пользователя:', e);
+            }
+            showNotVerifiedScreen();
         }
 
-        function showNotVerified() {
+        // Показывает экран для неверифицированных
+        function showNotVerifiedScreen() {
             document.getElementById('notVerifiedScreen').classList.add('active');
+            document.getElementById('mainScreen').classList.remove('active');
             document.getElementById('notVerifiedText').textContent = t('not_verified');
-            document.getElementById('goToBotBtn').textContent = t('go_to_bot');
-            document.getElementById('goToBotBtn').onclick = () => {
-                // ссылка на основного бота
-                window.open("https://t.me/your_main_bot", "_blank");
-            };
+
+            if (verifyMode) {
+                // Режим ввода кода
+                document.getElementById('verifyCodeBlock').style.display = 'block';
+                document.getElementById('goToBotBtn').style.display = 'none';
+                document.getElementById('codeInput').placeholder = t('code_placeholder');
+                document.getElementById('sendCodeBtn').textContent = t('confirm');
+                document.getElementById('sendCodeBtn').onclick = () => {
+                    const code = document.getElementById('codeInput').value.trim();
+                    if (code.length !== 4) {
+                        tg.showAlert(t('enter_code'));
+                        return;
+                    }
+                    tg.sendData(JSON.stringify({ action: 'verify', code }));
+                    tg.close();
+                };
+            } else {
+                // Просто предложение перейти в бота
+                document.getElementById('verifyCodeBlock').style.display = 'none';
+                document.getElementById('goToBotBtn').style.display = 'block';
+                document.getElementById('goToBotBtn').textContent = t('go_to_bot');
+                document.getElementById('goToBotBtn').onclick = () => {
+                    window.open('https://t.me/your_main_bot_username', '_blank');
+                };
+            }
         }
 
+        // Основное приложение
         function initMainApp(user) {
             document.getElementById('mainScreen').classList.add('active');
-            // обновим названия вкладок
-            document.querySelectorAll('[id^="tab_"]').forEach(el => {
-                const key = el.id; // tab_shop -> tab_shop
-                el.textContent = t(key);
-            });
+            document.getElementById('notVerifiedScreen').classList.remove('active');
+
+            // Локализуем вкладки
+            document.getElementById('tab_shop').textContent = t('tab_shop');
+            document.getElementById('tab_cart').textContent = t('tab_cart');
+            document.getElementById('tab_profile').textContent = t('tab_profile');
+            document.getElementById('tab_orders').textContent = t('tab_orders');
 
             let cart = [];
 
             // Загрузка товаров
-            fetch('/api/products?lang=${lang}')
+            fetch(`/api/products?lang=${lang}`)
                 .then(r => r.json())
-                .then(products => renderShop(products));
+                .then(products => renderShop(products))
+                .catch(err => {
+                    console.error('Ошибка загрузки товаров:', err);
+                    tg.showAlert('Не удалось загрузить товары');
+                });
 
             function renderShop(products) {
                 const container = document.getElementById('page_shop');
                 container.innerHTML = '';
+                if (!products.length) {
+                    container.innerHTML = '<p>Нет доступных товаров</p>';
+                    return;
+                }
                 products.forEach(p => {
                     const div = document.createElement('div');
                     div.className = 'card';
                     div.innerHTML = `
-                        <img src="${p.image_url}" alt="">
+                        <img src="${p.image_url}" alt="" onerror="this.src='https://placehold.co/72x72?text=No+Image'">
                         <div style="flex:1;">
                             <b>${p.name}</b><br>
                             <small>${p.price} ${t('sum')}</small>
@@ -185,7 +232,7 @@
                 });
             }
 
-            // Навигация
+            // Навигация по страницам
             const pages = {
                 shop: document.getElementById('page_shop'),
                 cart: document.getElementById('page_cart'),
@@ -208,7 +255,7 @@
             function renderCart() {
                 const container = document.getElementById('page_cart');
                 if (cart.length === 0) {
-                    container.innerHTML = <p>${t('empty_cart')}</p>;
+                    container.innerHTML = `<p>${t('empty_cart')}</p>`;
                     return;
                 }
                 let total = cart.reduce((sum, i) => sum + i.price * i.qty, 0);
@@ -240,9 +287,9 @@
             function renderProfile(user) {
                 const container = document.getElementById('page_profile');
                 container.innerHTML = `
-                    <input id="firstName" placeholder="${t('first_name')}" value="${user.first_name || ''}">
-                    <input id="address" placeholder="${t('address')}" value="${user.address || ''}">
-                    <p>${t('phone_label')}: ${user.phone}</p>
+                    <input type="text" id="firstName" placeholder="${t('first_name')}" value="${user.first_name || ''}">
+                    <input type="text" id="address" placeholder="${t('address')}" value="${user.address || ''}">
+                    <p>${t('phone_label')}: ${user.phone || 'не указан'}</p>
                     <button class="btn" id="saveProfileBtn">${t('save')}</button>
                 `;
                 document.getElementById('saveProfileBtn').onclick = () => {
@@ -255,27 +302,37 @@
 
             async function loadOrders() {
                 const container = document.getElementById('page_orders');
-                const resp = await fetch(/api/orders, { headers: { 'X-Telegram-Init-Data': tg.initData } });
-                const orders = await resp.json();
-                if (orders.length === 0) {
-                    container.innerHTML = <p>${t('orders_empty')}</p>;
-                    return;
+                try {
+                    const resp = await fetch('/api/orders', {
+                        headers: { 'X-Telegram-Init-Data': tg.initData }
+                    });
+                    const orders = await resp.json();
+                    if (!orders.length) {
+                        container.innerHTML = `<p>${t('orders_empty')}</p>`;
+                        return;
+                    }
+                    container.innerHTML = orders.map(o => `
+                        <div class="card">
+                            <b>№${o.id}</b> – ${o.status} | ${o.total} ${t('sum')}
+                        </div>
+                    `).join('');
+                } catch (e) {
+                    container.innerHTML = '<p>Ошибка загрузки заказов</p>';
                 }
-                container.innerHTML = orders.map(o => `
-                    <div class="card">
-                        <b>№${o.id}</b> – ${o.status} | ${o.total} ${t('sum')}
-                    </div>
-                `).join('');
             }
 
             function updateCartBadge() {
                 const count = cart.reduce((s, i) => s + i.qty, 0);
-                const badge = document.getElementById('tab_cart');
-                badge.textContent = `${t('tab_cart')} (${count})`;
+                document.getElementById('tab_cart').textContent = `${t('tab_cart')} (${count})`;
             }
+
+            // Изначально показываем товары
             pages.shop.style.display = 'block';
             updateCartBadge();
         }
+
+        // Стартуем проверку
+        checkVerification();
     </script>
 </body>
 </html>
